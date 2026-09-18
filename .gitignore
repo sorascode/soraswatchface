@@ -1,0 +1,9 @@
+build
+cmake-build-debug
+
+.lock-waf_*_build
+.waf-*-*/
+.waf3-*-*/
+
+.idea/
+*.iml
