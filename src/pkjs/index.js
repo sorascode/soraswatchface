@@ -1,3 +1,8 @@
+var Clay = require('@rebble/clay');
+var clayConfig = require('./config');
+var customClay = require('./custom-clay');
+var clay = new Clay(clayConfig, customClay);
+
 var xhrRequest = function (url, type, callback) {
     var xhr = new XMLHttpRequest();
     xhr.onload = function () {

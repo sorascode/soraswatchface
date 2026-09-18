@@ -1,4 +1,17 @@
 #include <pebble.h>
+#include <tgmath.h>
+
+#define SETTINGS_KEY 1
+
+typedef struct ClaySettings {
+  bool TemperatureUnit; // false = Celsius, true = Fahrenheit
+  bool ShowDate;
+  bool HRTEnabled;
+  int HRTDay;
+  time_t LastDose;
+} ClaySettings;
+
+static ClaySettings settings;
 
 static Window *s_main_window;
 
@@ -17,6 +30,90 @@ static BitmapLayer *s_bt_icon_layer;
 static GBitmap *s_bt_icon_bitmap;
 
 static TextLayer *s_weather_layer;
+
+static TextLayer *s_hrt_reminder_layer;
+
+static time_t get_current_hrt_day() {
+  time_t temp = time(NULL);
+  struct tm *hrt_day = localtime(&temp);
+
+  hrt_day->tm_hour = 0;
+  hrt_day->tm_min = 0;
+  hrt_day->tm_sec = 0;
+
+  int days_to_subtract = hrt_day->tm_wday - settings.HRTDay;
+
+  if (days_to_subtract < 0) {
+    days_to_subtract += 7;
+  }
+
+  hrt_day->tm_mday -= days_to_subtract;
+
+  return mktime(hrt_day);
+}
+
+static void prv_default_settings() {
+  settings.TemperatureUnit = false;
+  settings.ShowDate = true;
+  settings.HRTEnabled = false;
+  settings.HRTDay = 0;
+  settings.LastDose = 0;
+}
+
+static void prv_save_settings() {
+  persist_write_data(SETTINGS_KEY, &settings, sizeof(settings));
+}
+
+static void prv_load_settings() {
+  prv_default_settings();
+  persist_read_data(SETTINGS_KEY, &settings, sizeof(settings));
+}
+
+static void update_hrt_reminder() {
+  time_t hrt_day = get_current_hrt_day();
+
+  if (!settings.HRTEnabled || settings.LastDose > hrt_day) {
+    layer_set_hidden(text_layer_get_layer(s_hrt_reminder_layer), true);
+  } else {
+    layer_set_hidden(text_layer_get_layer(s_hrt_reminder_layer), false);
+
+    time_t now = time(NULL);
+    int difference = ceil(difftime(now, hrt_day) / (60.0 * 60.0 * 24.0)) - 1;
+
+    GRect bounds = layer_get_bounds(s_window_layer);
+
+    GRect frame = layer_get_frame(text_layer_get_layer(s_hrt_reminder_layer));
+    frame.origin.x = 25;
+    frame.size.w = bounds.size.w - 50;
+
+    if (difference < 1) {
+      text_layer_set_background_color(s_hrt_reminder_layer, GColorClear);
+      text_layer_set_text_color(s_hrt_reminder_layer, GColorWhite);
+      text_layer_set_text(s_hrt_reminder_layer, "It's HRT Day!");
+    } else if (difference < 2) {
+      text_layer_set_background_color(s_hrt_reminder_layer, GColorWhite);
+      text_layer_set_text_color(s_hrt_reminder_layer, GColorRed);
+      text_layer_set_text(s_hrt_reminder_layer, "! HRT 1 day late !");
+    } else {
+      text_layer_set_background_color(s_hrt_reminder_layer, GColorWhite);
+      text_layer_set_text_color(s_hrt_reminder_layer, GColorRed);
+      static char s_battery_buffer[24];
+      snprintf(s_battery_buffer, sizeof(s_battery_buffer), "! ! HRT %d days late ! !", difference);
+      text_layer_set_text(s_hrt_reminder_layer, s_battery_buffer);
+      frame.origin.x = 15;
+      frame.size.w = bounds.size.w - 30;
+    }
+
+    layer_set_frame(text_layer_get_layer(s_hrt_reminder_layer), frame);
+  }
+  layer_mark_dirty(s_trans_layer);
+}
+
+static void prv_update_display() {
+
+  layer_set_hidden(text_layer_get_layer(s_date_layer), !settings.ShowDate);
+  update_hrt_reminder();
+}
 
 static void battery_callback(BatteryChargeState state) {
   // Record the new battery level
@@ -71,6 +168,10 @@ static void tick_handler(struct tm *tick_time, TimeUnits units_changed) {
     dict_write_uint8(iter, MESSAGE_KEY_REQUEST_WEATHER, 1);
     app_message_outbox_send();
   }
+
+  if (tick_time->tm_hour == 0) {
+    update_hrt_reminder();
+  }
 }
 
 static void trans_update_proc(Layer *layer, GContext *ctx) {
@@ -81,7 +182,29 @@ static void trans_update_proc(Layer *layer, GContext *ctx) {
   int width_side = 5;
   int width_top = 5;
 
-  // Draw the filled bar inside the border
+
+  time_t hrt_day = get_current_hrt_day();
+
+  if (settings.HRTEnabled && settings.LastDose <= hrt_day) {
+    time_t now = time(NULL);
+    int difference = ceil(difftime(now, hrt_day) / (60.0 * 60.0 * 24.0)) - 1;
+
+    if (difference < 1) {
+      graphics_context_set_fill_color(ctx, GColorOxfordBlue);
+      graphics_fill_rect(ctx, GRect(0, 0, bounds.size.w, bounds.size.h), 0, GCornerNone);
+      graphics_context_set_fill_color(ctx, GColorBulgarianRose);
+      graphics_fill_rect(ctx, GRect(0, section_height, bounds.size.w, bounds.size.h - section_height * 2), 0, GCornerNone);
+      graphics_context_set_fill_color(ctx, GColorDarkGray);
+      graphics_fill_rect(ctx, GRect(0, section_height * 2, bounds.size.w, section_height), 0, GCornerNone);
+    } else if (difference < 2) {
+      graphics_context_set_fill_color(ctx, GColorBulgarianRose);
+      graphics_fill_rect(ctx, GRect(0, 0, bounds.size.w, bounds.size.h), 0, GCornerNone);
+    } else {
+      graphics_context_set_fill_color(ctx, GColorDarkCandyAppleRed);
+      graphics_fill_rect(ctx, GRect(0, 0, bounds.size.w, bounds.size.h), 0, GCornerNone);
+    }
+  }
+
   graphics_context_set_fill_color(ctx, GColorBlue);
   graphics_fill_rect(ctx, GRect(0, 0, width_side, bounds.size.h), 0, GCornerNone);
   graphics_fill_rect(ctx, GRect(bounds.size.w - width_side, 0, width_side, bounds.size.h), 0, GCornerNone);
@@ -131,8 +254,10 @@ static void main_window_load(Window *window) {
   int time_height = 60;
   int battery_height = 25;
   int bluetooth_height = 30;
+  int hrt_height = 35;
   int time_y = (bounds.size.h / 2) - (time_height / 2) - 10;
   int date_y = 53;
+  int hrt_y = time_y + 75;
   int battery_y = bounds.size.h - battery_height - 5;
   int bluetooth_y = bounds.size.h - bluetooth_height - 5;
   int weather_y = 10;
@@ -170,7 +295,7 @@ static void main_window_load(Window *window) {
   s_battery_layer = text_layer_create(
       GRect(0, battery_y, bounds.size.w, battery_height));
   text_layer_set_background_color(s_battery_layer, GColorClear);
-  text_layer_set_text_color(s_battery_layer, GColorDarkGray);
+  text_layer_set_text_color(s_battery_layer, GColorLightGray);
   text_layer_set_font(s_battery_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18));
   text_layer_set_text_alignment(s_battery_layer, GTextAlignmentCenter);
 
@@ -182,13 +307,20 @@ static void main_window_load(Window *window) {
   bitmap_layer_set_bitmap(s_bt_icon_layer, s_bt_icon_bitmap);
   bitmap_layer_set_compositing_mode(s_bt_icon_layer, GCompOpSet);
 
+  // Create the HRT Reminder TextLayer
+  s_hrt_reminder_layer = text_layer_create(
+      GRect(25, hrt_y, bounds.size.w - 50, hrt_height));
+  text_layer_set_font(s_hrt_reminder_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD));
+  text_layer_set_text_alignment(s_hrt_reminder_layer, GTextAlignmentCenter);
+
   // Add layers to the Window
   layer_add_child(s_window_layer, s_trans_layer);
   layer_add_child(s_window_layer, text_layer_get_layer(s_weather_layer));
   layer_add_child(s_window_layer, text_layer_get_layer(s_time_layer));
   layer_add_child(s_window_layer, text_layer_get_layer(s_date_layer));
   layer_add_child(s_window_layer, text_layer_get_layer(s_battery_layer));
-  layer_add_child(window_get_root_layer(window), bitmap_layer_get_layer(s_bt_icon_layer));
+  layer_add_child(s_window_layer, bitmap_layer_get_layer(s_bt_icon_layer));
+  layer_add_child(s_window_layer, text_layer_get_layer(s_hrt_reminder_layer));
 
   layer_mark_dirty(s_trans_layer);
 
@@ -202,19 +334,23 @@ static void main_window_load(Window *window) {
     .did_change = prv_unobstructed_did_change
   };
   unobstructed_area_service_subscribe(handlers, NULL);
+
+  prv_update_display();
 }
 
 static void main_window_unload(Window *window) {
+  layer_destroy(s_trans_layer);
   text_layer_destroy(s_weather_layer);
   text_layer_destroy(s_time_layer);
   text_layer_destroy(s_date_layer);
   text_layer_destroy(s_battery_layer);
   gbitmap_destroy(s_bt_icon_bitmap);
   bitmap_layer_destroy(s_bt_icon_layer);
-  layer_destroy(s_trans_layer);
+  text_layer_destroy(s_hrt_reminder_layer);
 }
 
 static void inbox_received_callback(DictionaryIterator *iterator, void *context) {
+  // Check for weather data
   Tuple *temp_tuple = dict_find(iterator, MESSAGE_KEY_TEMPERATURE);
   Tuple *conditions_tuple = dict_find(iterator, MESSAGE_KEY_CONDITIONS);
 
@@ -223,10 +359,75 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
     static char conditions_buffer[32];
     static char weather_layer_buffer[42];
 
-    snprintf(temperature_buffer, sizeof(temperature_buffer), "%d°C", (int)temp_tuple->value->int32);
+    int temp_value = (int)temp_tuple->value->int32;
+
+    // Convert to Fahrenheit if setting is enabled
+    if (settings.TemperatureUnit) {
+      temp_value = (temp_value * 9 / 5) + 32;
+      snprintf(temperature_buffer, sizeof(temperature_buffer), "%d°F", temp_value);
+    } else {
+      snprintf(temperature_buffer, sizeof(temperature_buffer), "%d°C", temp_value);
+    }
+
     snprintf(conditions_buffer, sizeof(conditions_buffer), "%s", conditions_tuple->value->cstring);
     snprintf(weather_layer_buffer, sizeof(weather_layer_buffer), "%s %s", temperature_buffer, conditions_buffer);
     text_layer_set_text(s_weather_layer, weather_layer_buffer);
+  }
+
+  Tuple *log_hrt_tuple = dict_find(iterator, MESSAGE_KEY_LOG_HRT);
+
+  if (log_hrt_tuple && log_hrt_tuple->value->int32 == 1) {
+    settings.LastDose = time(NULL);
+  }
+
+  // Check for Clay settings
+  Tuple *temp_unit_t = dict_find(iterator, MESSAGE_KEY_TemperatureUnit);
+  if (temp_unit_t) {
+    settings.TemperatureUnit = temp_unit_t->value->int32 == 1;
+  }
+
+  Tuple *show_date_t = dict_find(iterator, MESSAGE_KEY_ShowDate);
+  if (show_date_t) {
+    settings.ShowDate = show_date_t->value->int32 == 1;
+  }
+
+  Tuple *hrt_enabled_t = dict_find(iterator, MESSAGE_KEY_HRTEnabled);
+  if (hrt_enabled_t) {
+    settings.HRTEnabled = hrt_enabled_t->value->int32 == 1;
+  }
+
+  Tuple *hrt_day_t = dict_find(iterator, MESSAGE_KEY_HRTDay);
+  if (hrt_day_t) {
+    char *str_value = hrt_day_t->value->cstring;
+    int value = 0;
+    if (strcmp("mon", str_value) == 0) {
+      value = 1;
+    } else if (strcmp("tue", str_value) == 0) {
+      value = 2;
+    } else if (strcmp("wed", str_value) == 0) {
+      value = 3;
+    } else if (strcmp("thu", str_value) == 0) {
+      value = 4;
+    } else if (strcmp("fri", str_value) == 0) {
+      value = 5;
+    } else if (strcmp("sat", str_value) == 0) {
+      value = 6;
+    }
+    settings.HRTDay = value;
+  }
+
+  // Save and apply if any settings were changed
+  if (temp_unit_t || show_date_t || hrt_enabled_t || hrt_day_t || (log_hrt_tuple && log_hrt_tuple->value->int32 == 1)) {
+    prv_save_settings();
+    prv_update_display();
+
+    // Refetch weather if the temperature unit changed so the display updates
+    if (temp_unit_t) {
+      DictionaryIterator *iter;
+      app_message_outbox_begin(&iter);
+      dict_write_uint8(iter, MESSAGE_KEY_REQUEST_WEATHER, 1);
+      app_message_outbox_send();
+    }
   }
 }
 
@@ -243,6 +444,8 @@ static void outbox_sent_callback(DictionaryIterator *iterator, void *context) {
 }
 
 static void init() {
+  prv_load_settings();
+
   // Create main Window element and assign to pointer
   s_main_window = window_create();
 
@@ -282,8 +485,8 @@ static void init() {
   app_message_register_outbox_sent(outbox_sent_callback);
 
   // Open AppMessage
-  const int inbox_size = 128;
-  const int outbox_size = 128;
+  const int inbox_size = 256;
+  const int outbox_size = 256;
   app_message_open(inbox_size, outbox_size);
 }
 
